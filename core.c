@@ -56,6 +56,12 @@
 // arch.h) because it's not architecture-specific.
 #define _PM_ROW_DELAY 8 ///< Delay time between row address line changes (ms)
 
+// Gamma correction is provided if the number of bitplanes requested
+// exceeds 6 bits (the limit of RGB565 color fidelity). Gamma correction
+// makes intermediate shades more perceptually linear, but incurs more RAM
+// use and processor load.
+#define _PM_GAMMA 2.6 ///< Exponent for pow() function in gamma setting
+
 // These are the lowest-level functions for issing data to matrices.
 // There are three versions because it depends on how the six RGB data bits
 // (and clock bit) are arranged within a 32-bit PORT register. If all six
@@ -94,9 +100,9 @@ ProtomatterStatus _PM_init(Protomatter_core *core, uint16_t bitWidth,
     rgbCount = 5; // Max 5 in parallel (32-bit PORT)
   if (addrCount > 5)
     addrCount = 5; // Max 5 address lines (A-E)
-    // bitDepth is NOT constrained here, handle in calling function
-    // (varies with implementation, e.g. GFX lib is max 6 bitplanes,
-    // but might be more or less elsewhere)
+  // bitDepth is NOT constrained here, handle in calling function
+  // (varies with implementation, e.g. GFX lib is max 6 bitplanes,
+  // but might be more or less elsewhere, or if adding gamma correction).
 
 #if defined(_PM_TIMER_DEFAULT)
   // If NULL timer was passed in (the default case for the constructor),
@@ -120,6 +126,7 @@ ProtomatterStatus _PM_init(Protomatter_core *core, uint16_t bitWidth,
   core->doubleBuffer = doubleBuffer;
   core->addr = NULL;
   core->screenData = NULL;
+  core->gamma_rb = NULL;
 
   // Make a copy of the rgbList and addrList tables in case they're
   // passed from local vars on the stack or some other non-persistent
@@ -227,6 +234,31 @@ ProtomatterStatus _PM_begin(Protomatter_core *core) {
   if (!(core->screenData =
             (uint8_t *)_PM_ALLOCATOR(screenBytes + rgbMaskBytes))) {
     return PROTOMATTER_ERR_MALLOC;
+  }
+
+  // Enable gamma correction if requested planes exceeds RGB565 color res.
+  if(core->numPlanes > 6) { // If exceeds RGB565 color res, enable gamma corr
+    if((core->gamma_rb = (uint16_t *)_PM_ALLOCATOR(96 * sizeof(uint16_t)))) {
+      core->gamma_g = &core->gamma_rb[32];
+      // The gamma tables remap 5- and 6-bit brightness levels to the
+      // number of bitplanes requested (10 should be ample, but you can
+      // use more or less to balance accuracy vs RAM & processor load).
+      float top = (float)((1 << core->numPlanes) - 1);
+      for (uint8_t i = 0; i < 32; i++) { // 5 bits red, blue
+        core->gamma_rb[i] = (uint16_t)(pow((float)i / 31.0, _PM_GAMMA) *
+                                       top + 0.5);
+      }
+      for (uint8_t i = 0; i < 64; i++) { // 6 bits green
+        core->gamma_g[i] = (uint16_t)(pow((float)i / 63.0, _PM_GAMMA) *
+                                      top + 0.5);
+      }
+    } else {
+      // Couldn't alloc gamma tables. Free previously-allocated
+      // screen data and return bad news.
+      _PM_FREE(core->screenData);
+      core->screenData = NULL;
+      return PROTOMATTER_ERR_MALLOC;
+    }
   }
 
   // rgbMask data follows the matrix buffer(s)
@@ -427,6 +459,8 @@ void _PM_free(Protomatter_core *core) {
   if ((core)) {
     _PM_stop(core);
     // TO DO: Set all pins back to inputs here?
+    if(core->gamma_rb)
+      _PM_FREE(core->gamma_rb);
     if (core->screenData)
       _PM_FREE(core->screenData);
     if (core->addr)

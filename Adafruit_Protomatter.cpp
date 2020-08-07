@@ -72,8 +72,8 @@ Adafruit_Protomatter::Adafruit_Protomatter(uint16_t bitWidth, uint8_t bitDepth,
                                            void *timer)
     : GFXcanvas16(bitWidth,
                   (2 << min((int)addrCount, 5)) * min((int)rgbCount, 5)) {
-  if (bitDepth > 6)
-    bitDepth = 6; // GFXcanvas16 color limit (565)
+  if (bitDepth > 16)
+    bitDepth = 16; // Max resolution of gamma-correction tables
 
   // Arguments are passed through to the C _PM_init() function which does
   // some input validation and minor allocation. Return value is ignored

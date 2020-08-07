@@ -445,7 +445,8 @@ uint32_t _PM_timerStop(void *tptr) {
 #define _PM_clockHoldLow asm("nop");
 #endif
 
-#define _PM_minMinPeriod 160
+//#define _PM_minMinPeriod 160
+#define _PM_minMinPeriod 50
 
 #endif // end __SAMD51__
 
@@ -1248,90 +1249,219 @@ __attribute__((noinline)) void _PM_convert_565_byte(Protomatter_core *core,
   // handle that here, just the pad...
   dest += pad;
 
-  uint32_t initialRedBit, initialGreenBit, initialBlueBit;
-  if (core->numPlanes == 6) {
-    // If numPlanes is 6, red and blue are expanded from 5 to 6 bits.
-    // This involves duplicating the MSB of the 5-bit value to the LSB
-    // of its corresponding 6-bit value...or in this case, bitmasks for
-    // red and blue are initially assigned to canvas MSBs, while green
-    // starts at LSB (because it's already 6-bit). Inner loop below then
-    // wraps red & blue after the first bitplane.
-    initialRedBit = 0b1000000000000000;   // MSB red
-    initialGreenBit = 0b0000000000100000; // LSB green
-    initialBlueBit = 0b0000000000010000;  // MSB blue
-  } else {
-    // If numPlanes is 1 to 5, no expansion is needed, and one or all
-    // three color components might be decimated by some number of bits.
-    // The initial bitmasks are set to the components' numPlanesth bit
-    // (e.g. for 5 planes, start at red & blue bit #0, green bit #1,
-    // for 4 planes, everything starts at the next bit up, etc.).
-    uint8_t shiftLeft = 5 - core->numPlanes;
-    initialRedBit = 0b0000100000000000 << shiftLeft;
-    initialGreenBit = 0b0000000001000000 << shiftLeft;
-    initialBlueBit = 0b0000000000000001 << shiftLeft;
-  }
+  // Interesting -- the gamma-corrected case looks like it may be simpler
+  // than the plain one. If so, might use a table lookup in all cases,
+  // don't need to malloc the tables then, just make part of the core
+  // struct. 6 or fewer bitplanes would map linearly, else do pow().
+  if(core->gamma_rb) {
+    // Remap RGB565 pixels through gamma tables
+    uint32_t rowSize = bitplaneSize * core->numPlanes;
+    for (uint8_t row = 0; row < core->numRowPairs; row++) {
 
-  // This works sequentially-ish through the destination buffer,
-  // reading from the canvas source pixels in repeated passes,
-  // beginning from the least bit.
-  for (uint8_t row = 0; row < core->numRowPairs; row++) {
-    uint32_t redBit = initialRedBit;
-    uint32_t greenBit = initialGreenBit;
-    uint32_t blueBit = initialBlueBit;
-    for (uint8_t plane = 0; plane < core->numPlanes; plane++) {
 #if defined(_PM_portToggleRegister)
       uint8_t prior = clockMask; // Set clock bit on 1st out
 #endif
+
+// Switching these loops (x, then plane) reduces a lot of repeated
+// passes and bit-masking. However, the data in RAM is plane-major,
+// so this requires a lot of jumping around of the dest pointer.
+// Still, saves much math.
+
+#if 0
       for (uint16_t x = 0; x < width; x++) {
-        uint16_t upperRGB = upperSrc[x]; // Pixel in upper half
-        uint16_t lowerRGB = lowerSrc[x]; // Pixel in lower half
-        uint8_t result = 0;
-        if (upperRGB & redBit)
-          result |= pinMask[0];
-        if (upperRGB & greenBit)
-          result |= pinMask[1];
-        if (upperRGB & blueBit)
-          result |= pinMask[2];
-        if (lowerRGB & redBit)
-          result |= pinMask[3];
-        if (lowerRGB & greenBit)
-          result |= pinMask[4];
-        if (lowerRGB & blueBit)
-          result |= pinMask[5];
+        uint16_t rgb = upperSrc[x]; // Pixel in upper half
+        uint16_t upperRed = core->gamma_rb[rgb >> 11];
+        uint16_t upperGreen = core->gamma_g[(rgb >> 5) & 0x3F];
+        uint16_t upperBlue = core->gamma_rb[rgb & 0x1F];
+        rgb = lowerSrc[x]; // Pixel in lower half
+        uint16_t lowerRed = core->gamma_rb[rgb >> 11];
+        uint16_t lowerGreen = core->gamma_g[(rgb >> 5) & 0x3F];
+        uint16_t lowerBlue = core->gamma_rb[rgb & 0x1F];
+        uint16_t planeMask = 1;
+        for (uint8_t plane = 0; plane < core->numPlanes; plane++) {
+          uint8_t result = 0;
+          if (upperRed & planeMask)
+            result |= pinMask[0];
+          if (upperGreen & planeMask)
+            result |= pinMask[1];
+          if (upperBlue & planeMask)
+            result |= pinMask[2];
+          if (lowerRed & planeMask)
+            result |= pinMask[3];
+          if (lowerGreen & planeMask)
+            result |= pinMask[4];
+          if (lowerBlue & planeMask)
+            result |= pinMask[5];
 #if defined(_PM_portToggleRegister)
-        dest[x] = result ^ prior;
-        prior = result | clockMask; // Set clock bit on next out
+          *dest = result ^ prior;
+          prior = result | clockMask; // Set clock bit on next out
 #else
-        dest[x] = result;
+          *dest = result;
 #endif
-      } // end x
-      greenBit <<= 1;
-      if (plane || (core->numPlanes < 6)) {
-        // In most cases red & blue bit scoot 1 left...
-        redBit <<= 1;
-        blueBit <<= 1;
-      } else {
-        // Exception being after bit 0 with 6-plane display,
-        // in which case they're reset to red & blue LSBs
-        // (so 5-bit colors are expanded to 6 bits).
-        redBit = 0b0000100000000000;
-        blueBit = 0b0000000000000001;
+          dest += bitplaneSize; // Next bitplane
+          planeMask <<= 1;
+        }
+        dest -= (rowsize - 1); // Reverse bitplane adds above, increment x
+        planeMask <<= 1;       // Next bit in gamma tables
       }
+
+// Wait, this is each bitplane.
+// Guess a separate outside-x loop over planes will happen here.
 #if defined(_PM_portToggleRegister)
-      // If using bit-toggle register, erase the toggle bit on the
-      // first element of each bitplane & row pair. The matrix-driving
-      // interrupt functions correspondingly set the clock low before
-      // finishing. This is all done for legibility on oscilloscope --
-      // so idle clock appears LOW -- but really the matrix samples on
-      // a rising edge and we could leave it high, but at this stage
-      // in development just want the scope "readable."
-      dest[-pad] &= ~clockMask; // Negative index is legal & intentional
+        // If using bit-toggle register, erase the toggle bit on the
+        // first element of each bitplane & row pair. The matrix-driving
+        // interrupt functions correspondingly set the clock low before
+        // finishing. This is all done for legibility on oscilloscope --
+        // so idle clock appears LOW -- but really the matrix samples on
+        // a rising edge and we could leave it high, but at this stage
+        // in development just want the scope "readable."
+        dest[-pad] &= ~clockMask; // Negative index is legal & intentional
 #endif
-      dest += bitplaneSize; // Advance one scanline in dest buffer
-    }                       // end plane
-    upperSrc += width;      // Advance one scanline in source buffer
-    lowerSrc += width;
-  } // end row
+      dest += rowSize;
+#endif
+
+
+
+
+      uint16_t planeMask = 1; // Start from LSB, work up
+      for (uint8_t plane = 0; plane < core->numPlanes; plane++) {
+#if defined(_PM_portToggleRegister)
+        uint8_t prior = clockMask; // Set clock bit on 1st out
+#endif
+        for (uint16_t x = 0; x < width; x++) {
+// If the x & plane loops can be reversed, a lot of these shifts & masks
+// could be avoided
+          uint16_t rgb = upperSrc[x]; // Pixel in upper half
+          uint16_t upperRed = core->gamma_rb[rgb >> 11];
+          uint16_t upperGreen = core->gamma_g[(rgb >> 5) & 0x3F];
+          uint16_t upperBlue = core->gamma_rb[rgb & 0x1F];
+          rgb = lowerSrc[x]; // Pixel in lower half
+          uint16_t lowerRed = core->gamma_rb[rgb >> 11];
+          uint16_t lowerGreen = core->gamma_g[(rgb >> 5) & 0x3F];
+          uint16_t lowerBlue = core->gamma_rb[rgb & 0x1F];
+          uint8_t result = 0;
+          if (upperRed & planeMask)
+            result |= pinMask[0];
+          if (upperGreen & planeMask)
+            result |= pinMask[1];
+          if (upperBlue & planeMask)
+            result |= pinMask[2];
+          if (lowerRed & planeMask)
+            result |= pinMask[3];
+          if (lowerGreen & planeMask)
+            result |= pinMask[4];
+          if (lowerBlue & planeMask)
+            result |= pinMask[5];
+#if defined(_PM_portToggleRegister)
+          dest[x] = result ^ prior;
+          prior = result | clockMask; // Set clock bit on next out
+#else
+          dest[x] = result;
+#endif
+        }
+#if defined(_PM_portToggleRegister)
+        // If using bit-toggle register, erase the toggle bit on the
+        // first element of each bitplane & row pair. The matrix-driving
+        // interrupt functions correspondingly set the clock low before
+        // finishing. This is all done for legibility on oscilloscope --
+        // so idle clock appears LOW -- but really the matrix samples on
+        // a rising edge and we could leave it high, but at this stage
+        // in development just want the scope "readable."
+        dest[-pad] &= ~clockMask; // Negative index is legal & intentional
+#endif
+        dest += bitplaneSize; // Advance one scanline in dest buffer
+        planeMask <<= 1;      // Next bit in gamma tables
+      }                       // end plane
+      upperSrc += width;      // Advance one scanline in source buffer
+      lowerSrc += width;
+    } // end row
+  } else {
+    uint32_t initialRedBit, initialGreenBit, initialBlueBit;
+    if (core->numPlanes == 6) {
+      // If numPlanes is 6, red and blue are expanded from 5 to 6 bits.
+      // This involves duplicating the MSB of the 5-bit value to the LSB
+      // of its corresponding 6-bit value...or in this case, bitmasks for
+      // red and blue are initially assigned to canvas MSBs, while green
+      // starts at LSB (because it's already 6-bit). Inner loop below then
+      // wraps red & blue after the first bitplane.
+      initialRedBit = 0b1000000000000000;   // MSB red
+      initialGreenBit = 0b0000000000100000; // LSB green
+      initialBlueBit = 0b0000000000010000;  // MSB blue
+    } else {
+      // If numPlanes is 1 to 5, no expansion is needed, and one or all
+      // three color components might be decimated by some number of bits.
+      // The initial bitmasks are set to the components' numPlanesth bit
+      // (e.g. for 5 planes, start at red & blue bit #0, green bit #1,
+      // for 4 planes, everything starts at the next bit up, etc.).
+      uint8_t shiftLeft = 5 - core->numPlanes;
+      initialRedBit = 0b0000100000000000 << shiftLeft;
+      initialGreenBit = 0b0000000001000000 << shiftLeft;
+      initialBlueBit = 0b0000000000000001 << shiftLeft;
+    }
+
+    // This works sequentially-ish through the destination buffer,
+    // reading from the canvas source pixels in repeated passes,
+    // beginning from the least bit.
+    for (uint8_t row = 0; row < core->numRowPairs; row++) {
+      uint32_t redBit = initialRedBit;
+      uint32_t greenBit = initialGreenBit;
+      uint32_t blueBit = initialBlueBit;
+      for (uint8_t plane = 0; plane < core->numPlanes; plane++) {
+#if defined(_PM_portToggleRegister)
+        uint8_t prior = clockMask; // Set clock bit on 1st out
+#endif
+        for (uint16_t x = 0; x < width; x++) {
+          uint16_t upperRGB = upperSrc[x]; // Pixel in upper half
+          uint16_t lowerRGB = lowerSrc[x]; // Pixel in lower half
+          uint8_t result = 0;
+          if (upperRGB & redBit)
+            result |= pinMask[0];
+          if (upperRGB & greenBit)
+            result |= pinMask[1];
+          if (upperRGB & blueBit)
+            result |= pinMask[2];
+          if (lowerRGB & redBit)
+            result |= pinMask[3];
+          if (lowerRGB & greenBit)
+            result |= pinMask[4];
+          if (lowerRGB & blueBit)
+            result |= pinMask[5];
+#if defined(_PM_portToggleRegister)
+          dest[x] = result ^ prior;
+          prior = result | clockMask; // Set clock bit on next out
+#else
+          dest[x] = result;
+#endif
+        } // end x
+        greenBit <<= 1;
+        if (plane || (core->numPlanes < 6)) {
+          // In most cases red & blue bit scoot 1 left...
+          redBit <<= 1;
+          blueBit <<= 1;
+        } else {
+          // Exception being after bit 0 with 6-plane display,
+          // in which case they're reset to red & blue LSBs
+          // (so 5-bit colors are expanded to 6 bits).
+          redBit = 0b0000100000000000;
+          blueBit = 0b0000000000000001;
+        }
+#if defined(_PM_portToggleRegister)
+        // If using bit-toggle register, erase the toggle bit on the
+        // first element of each bitplane & row pair. The matrix-driving
+        // interrupt functions correspondingly set the clock low before
+        // finishing. This is all done for legibility on oscilloscope --
+        // so idle clock appears LOW -- but really the matrix samples on
+        // a rising edge and we could leave it high, but at this stage
+        // in development just want the scope "readable."
+        dest[-pad] &= ~clockMask; // Negative index is legal & intentional
+#endif
+        dest += bitplaneSize; // Advance one scanline in dest buffer
+      }                       // end plane
+      upperSrc += width;      // Advance one scanline in source buffer
+      lowerSrc += width;
+    } // end row
+
+  } // end no gamma
 }
 
 // Corresponding function for word output -- either 12 RGB bits (2 parallel

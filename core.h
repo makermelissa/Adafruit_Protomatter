@@ -66,6 +66,8 @@ typedef struct {
   uint32_t rgbAndClockMask;      ///< PORT bit mask for RGB data + clock
   volatile void *addrPortToggle; ///< See singleAddrPort below
   void *screenData;              ///< Per-bitplane RGB data for matrix
+  uint16_t *gamma_rb;            ///< 32-element gamma table for red & blue
+  uint16_t *gamma_g;             ///< 64-element gamma table for green
   _PM_pin latch;                 ///< RGB data latch
   _PM_pin oe;                    ///< !OE (LOW out enable)
   _PM_pin *addr;                 ///< Array of address pins
