@@ -100,9 +100,10 @@ ProtomatterStatus _PM_init(Protomatter_core *core, uint16_t bitWidth,
     rgbCount = 5; // Max 5 in parallel (32-bit PORT)
   if (addrCount > 5)
     addrCount = 5; // Max 5 address lines (A-E)
-  // bitDepth is NOT constrained here, handle in calling function
-  // (varies with implementation, e.g. GFX lib is max 6 bitplanes,
-  // but might be more or less elsewhere, or if adding gamma correction).
+
+    // bitDepth is NOT constrained here, handle in calling function
+    // (varies with implementation, e.g. GFX lib is max 6 bitplanes,
+    // but might be more or less elsewhere, or if adding gamma correction).
 
 #if defined(_PM_TIMER_DEFAULT)
   // If NULL timer was passed in (the default case for the constructor),
@@ -317,20 +318,20 @@ ProtomatterStatus _PM_begin(Protomatter_core *core) {
     // 5 or fewer bitplanes, decimate 5-bit red+blue and 6-bit green to
     // that many planes. Shift right, in-to-out conversion is linear.
     uint8_t shift = 5 - core->numPlanes; // Might be zero, that's OK
-    for (uint8_t i=0; i<32; i++) {
+    for (uint8_t i = 0; i < 32; i++) {
       core->remap_rb[i] = i >> shift;
     }
     shift = 6 - core->numPlanes;
-    for (uint8_t i=0; i<64; i++) {
+    for (uint8_t i = 0; i < 64; i++) {
       core->remap_g[i] = i >> shift;
     }
   } else if (core->numPlanes == 6) {
     // 6 bitplanes exactly, 6-bit green is preserved, 5-bit red+blue
     // is expanded to 6 bits, in-to-out conversion is still linear.
-    for (uint8_t i=0; i<32; i++) {
+    for (uint8_t i = 0; i < 32; i++) {
       core->remap_rb[i] = (i << 1) | (i >> 4); // Copy msb to lsb
     }
-    for (uint8_t i=0; i<64; i++) {
+    for (uint8_t i = 0; i < 64; i++) {
       core->remap_g[i] = i;
     }
   } else {
@@ -341,12 +342,12 @@ ProtomatterStatus _PM_begin(Protomatter_core *core) {
     // balance accuracy vs RAM & processor load).
     float top = (float)((1 << core->numPlanes) - 1);
     for (uint8_t i = 0; i < 32; i++) { // 5 bits red, blue
-      core->remap_rb[i] = (uint16_t)(pow((float)i / 31.0, _PM_GAMMA) *
-                                     top + 0.5);
+      core->remap_rb[i] =
+          (uint16_t)(pow((float)i / 31.0, _PM_GAMMA) * top + 0.5);
     }
     for (uint8_t i = 0; i < 64; i++) { // 6 bits green
-      core->remap_g[i] = (uint16_t)(pow((float)i / 63.0, _PM_GAMMA) *
-                                    top + 0.5);
+      core->remap_g[i] =
+          (uint16_t)(pow((float)i / 63.0, _PM_GAMMA) * top + 0.5);
     }
   }
 
@@ -588,8 +589,8 @@ IRAM_ATTR void _PM_row_handler(Protomatter_core *core) {
 
   // Set timer and enable LED output for data loaded on PRIOR pass:
   _PM_timerStart(core->timer, core->bitZeroPeriod << prevPlane);
-  _PM_delayMicroseconds(1);   // Appease Teensy4
-  _PM_clearReg(core->oe); // Enable LED output
+  _PM_delayMicroseconds(1); // Appease Teensy4
+  _PM_clearReg(core->oe);   // Enable LED output
 
   uint32_t elementsPerLine =
       _PM_chunkSize * ((core->width + (_PM_chunkSize - 1)) / _PM_chunkSize);
