@@ -126,7 +126,6 @@ ProtomatterStatus _PM_init(Protomatter_core *core, uint16_t bitWidth,
   core->doubleBuffer = doubleBuffer;
   core->addr = NULL;
   core->screenData = NULL;
-  core->gamma_rb = NULL;
 
   // Make a copy of the rgbList and addrList tables in case they're
   // passed from local vars on the stack or some other non-persistent
@@ -151,8 +150,9 @@ ProtomatterStatus _PM_init(Protomatter_core *core, uint16_t bitWidth,
 
 // Allocate display buffers and populate additional elements.
 ProtomatterStatus _PM_begin(Protomatter_core *core) {
-  if (!core)
+  if (!core) {
     return PROTOMATTER_ERR_ARG;
+  }
 
   if (!core->rgbPins) { // NULL if copy failed to allocate
     return PROTOMATTER_ERR_MALLOC;
@@ -236,31 +236,6 @@ ProtomatterStatus _PM_begin(Protomatter_core *core) {
     return PROTOMATTER_ERR_MALLOC;
   }
 
-  // Enable gamma correction if requested planes exceeds RGB565 color res.
-  if(core->numPlanes > 6) { // If exceeds RGB565 color res, enable gamma corr
-    if((core->gamma_rb = (uint16_t *)_PM_ALLOCATOR(96 * sizeof(uint16_t)))) {
-      core->gamma_g = &core->gamma_rb[32];
-      // The gamma tables remap 5- and 6-bit brightness levels to the
-      // number of bitplanes requested (10 should be ample, but you can
-      // use more or less to balance accuracy vs RAM & processor load).
-      float top = (float)((1 << core->numPlanes) - 1);
-      for (uint8_t i = 0; i < 32; i++) { // 5 bits red, blue
-        core->gamma_rb[i] = (uint16_t)(pow((float)i / 31.0, _PM_GAMMA) *
-                                       top + 0.5);
-      }
-      for (uint8_t i = 0; i < 64; i++) { // 6 bits green
-        core->gamma_g[i] = (uint16_t)(pow((float)i / 63.0, _PM_GAMMA) *
-                                      top + 0.5);
-      }
-    } else {
-      // Couldn't alloc gamma tables. Free previously-allocated
-      // screen data and return bad news.
-      _PM_FREE(core->screenData);
-      core->screenData = NULL;
-      return PROTOMATTER_ERR_MALLOC;
-    }
-  }
-
   // rgbMask data follows the matrix buffer(s)
   core->rgbMask = core->screenData + screenBytes;
 
@@ -332,6 +307,46 @@ ProtomatterStatus _PM_begin(Protomatter_core *core) {
     for (uint8_t i = 0; i < core->parallel * 6; i++) {
       ((uint32_t *)core->rgbMask)[i] = // Pin bitmasks are 32-bit
           _PM_portBitMask(core->rgbPins[i]);
+    }
+  }
+
+  // Set up remap_rb and remap_g tables, which assist in quickly converting
+  // RGB565 pixel values (from the image canvas) to the number of bitplanes
+  // allocated to the matrix (not always a simple shift).
+  if (core->numPlanes < 6) {
+    // 5 or fewer bitplanes, decimate 5-bit red+blue and 6-bit green to
+    // that many planes. Shift right, in-to-out conversion is linear.
+    uint8_t shift = 5 - core->numPlanes; // Might be zero, that's OK
+    for (uint8_t i=0; i<32; i++) {
+      core->remap_rb[i] = i >> shift;
+    }
+    shift = 6 - core->numPlanes;
+    for (uint8_t i=0; i<64; i++) {
+      core->remap_g[i] = i >> shift;
+    }
+  } else if (core->numPlanes == 6) {
+    // 6 bitplanes exactly, 6-bit green is preserved, 5-bit red+blue
+    // is expanded to 6 bits, in-to-out conversion is still linear.
+    for (uint8_t i=0; i<32; i++) {
+      core->remap_rb[i] = (i << 1) | (i >> 4); // Copy msb to lsb
+    }
+    for (uint8_t i=0; i<64; i++) {
+      core->remap_g[i] = i;
+    }
+  } else {
+    // Above 6 bitplanes, gamma correction kicks in, in-to-out conversion
+    // is no longer linear, aiming for perceptual linearity instead. 5-bit
+    // red+blue and 6-bit green are expanded to the number of bitplanes
+    // requested (10 should be ample, but you can use more or less to
+    // balance accuracy vs RAM & processor load).
+    float top = (float)((1 << core->numPlanes) - 1);
+    for (uint8_t i = 0; i < 32; i++) { // 5 bits red, blue
+      core->remap_rb[i] = (uint16_t)(pow((float)i / 31.0, _PM_GAMMA) *
+                                     top + 0.5);
+    }
+    for (uint8_t i = 0; i < 64; i++) { // 6 bits green
+      core->remap_g[i] = (uint16_t)(pow((float)i / 63.0, _PM_GAMMA) *
+                                    top + 0.5);
     }
   }
 
@@ -459,8 +474,6 @@ void _PM_free(Protomatter_core *core) {
   if ((core)) {
     _PM_stop(core);
     // TO DO: Set all pins back to inputs here?
-    if(core->gamma_rb)
-      _PM_FREE(core->gamma_rb);
     if (core->screenData)
       _PM_FREE(core->screenData);
     if (core->addr)
