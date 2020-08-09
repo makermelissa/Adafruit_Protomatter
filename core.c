@@ -841,6 +841,11 @@ IRAM_ATTR static void blast_long(Protomatter_core *core, uint32_t *data) {
 #endif
 }
 
+// Used to disable lesser bitplanes before the timer overflow.
+IRAM_ATTR void _PM_matrix_oe_off(Protomatter_core *core) {
+  _PM_setReg(core->oe); // Disable LED output
+}
+
 // Returns current value of frame counter and resets its value to zero.
 // Two calls to this, timed one second apart (or use math with other
 // intervals), can be used to get a rough frames-per-second value for

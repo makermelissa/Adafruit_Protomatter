@@ -199,9 +199,15 @@ void *_PM_protoPtr = NULL;
 
 // Timer interrupt service routine
 void _PM_IRQ_HANDLER(void) {
-  // Clear overflow flag:
-  _PM_TIMER_DEFAULT->COUNT16.INTFLAG.reg = TC_INTFLAG_OVF;
-  _PM_row_handler(_PM_protoPtr); // In core.c
+  Protomatter_core *core = (Protomatter_core *)_PM_protoPtr;
+  Tc *timer = core->timer;
+  if (timer->COUNT16.INTFLAG.bit.OVF) { // Overflow? New bitplane...
+    timer->COUNT16.INTFLAG.bit.OVF = 1; //   Clear overflow flag
+    _PM_row_handler(core);              //   Load new row, in core.c
+  } else {                              // Compare match, end bitplane early
+    timer->COUNT16.INTFLAG.bit.MC0 = 1; //   Clear match compare 0
+    _PM_matrix_oe_off(core);            //   Disable LED output
+  }
 }
 
 #elif defined(CIRCUITPY)
@@ -235,9 +241,15 @@ void *_PM_protoPtr = NULL;
 
 // Timer interrupt service routine
 void _PM_IRQ_HANDLER(void) {
-  ((Tc *)(((Protomatter_core *)_PM_protoPtr)->timer))->COUNT16.INTFLAG.reg =
-      TC_INTFLAG_OVF;
-  _PM_row_handler(_PM_protoPtr); // In core.c
+  Protomatter_core *core = (Protomatter_core *)_PM_protoPtr;
+  Tc *timer = core->timer;
+  if (timer->COUNT16.INTFLAG.bit.OVF) { // Overflow? New bitplane...
+    timer->COUNT16.INTFLAG.bit.OVF = 1; //   Clear overflow flag
+    _PM_row_handler(core);              //   Load new row, in core.c
+  } else {                              // Compare match, end bitplane early
+    timer->COUNT16.INTFLAG.bit.MC0 = 1; //   Clear match compare 0
+    _PM_matrix_oe_off(core);            //   Disable LED output
+  }
 }
 
 #else
@@ -948,6 +960,7 @@ static hw_timer_t *_PM_esp32timer = NULL;
 #define _PM_TIMER_DEFAULT &_PM_esp32timer
 
 extern IRAM_ATTR void _PM_row_handler(Protomatter_core *core);
+extern IRAM_ATTR void _PM_matrix_oe_off(Protomatter_core *core);
 
 // Timer interrupt handler. This, _PM_row_handler() and any functions
 // called by _PM_row_handler() should all have the IRAM_ATTR attribute

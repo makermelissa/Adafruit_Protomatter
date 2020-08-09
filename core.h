@@ -202,6 +202,14 @@ extern void _PM_free(Protomatter_core *core);
 extern void _PM_row_handler(Protomatter_core *core);
 
 /*!
+  @brief  Disables matrix LED output via the OE pin. Sometimes used on
+          lesser bitplanes to switch off sooner than the timer overflow
+          interrupt normally would.
+  @param  core  Pointer to Protomatter_core structure.
+*/
+extern void _PM_matrix_oe_off(Protomatter_core *core);
+
+/*!
   @brief  Returns current value of frame counter and resets its value to
           zero. Two calls to this, timed one second apart (or use math with
           other intervals), can be used to get a rough frames-per-second
