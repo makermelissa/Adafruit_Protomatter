@@ -355,9 +355,14 @@ ProtomatterStatus _PM_begin(Protomatter_core *core) {
   uint32_t minPeriodPerFrame = _PM_timerFreq / _PM_MAX_REFRESH_HZ;
   uint32_t minPeriodPerLine = minPeriodPerFrame / core->numRowPairs;
   core->minPeriod = minPeriodPerLine / ((1 << core->numPlanes) - 1);
+  if(core->minPeriod < 2) {
+    core->minPeriod = 2;
+  }
+#if 0
   if (core->minPeriod < _PM_minMinPeriod) {
     core->minPeriod = _PM_minMinPeriod;
   }
+#endif
   // Actual frame rate may be lower than this...it's only an estimate
   // and does not factor in things like address line selection delays
   // or interrupt overhead. That's OK, just don't want to exceed this
@@ -365,7 +370,8 @@ ProtomatterStatus _PM_begin(Protomatter_core *core) {
   // Make a wild guess for the initial bit-zero interval. It's okay
   // that this is off, code adapts to actual timer results pretty quick.
 
-  core->bitZeroPeriod = core->width * 5; // Initial guesstimate
+//  core->bitZeroPeriod = core->width * 5; // Initial guesstimate
+  core->bitZeroPeriod = core->minPeriod; // Initial guesstimate
 
   core->activeBuffer = 0;
 

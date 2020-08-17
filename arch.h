@@ -205,7 +205,7 @@ void _PM_IRQ_HANDLER(void) {
     timer->COUNT16.INTFLAG.bit.OVF = 1; //   Clear overflow flag
     _PM_row_handler(core);              //   Load new row, in core.c
   } else {                              // Compare match, end bitplane early
-    timer->COUNT16.INTFLAG.bit.MC0 = 1; //   Clear match compare 0
+    timer->COUNT16.INTFLAG.bit.MC1 = 1; //   Clear match compare 1
     _PM_matrix_oe_off(core);            //   Disable LED output
   }
 }
@@ -247,7 +247,7 @@ void _PM_IRQ_HANDLER(void) {
     timer->COUNT16.INTFLAG.bit.OVF = 1; //   Clear overflow flag
     _PM_row_handler(core);              //   Load new row, in core.c
   } else {                              // Compare match, end bitplane early
-    timer->COUNT16.INTFLAG.bit.MC0 = 1; //   Clear match compare 0
+    timer->COUNT16.INTFLAG.bit.MC1 = 1; //   Clear match compare 1
     _PM_matrix_oe_off(core);            //   Disable LED output
   }
 }
@@ -300,6 +300,9 @@ void _PM_IRQ_HANDLER(void) {
 // Other port register lookups go here
 
 #endif
+
+//#define _PM_minMinPeriod 160
+#define _PM_minMinPeriod 300
 
 // Initialize, but do not start, timer
 void _PM_timerInit(void *tptr) {
@@ -394,8 +397,8 @@ void _PM_timerInit(void *tptr) {
   while (tc->COUNT16.SYNCBUSY.bit.CTRLB)
     ;
 
-  // Overflow interrupt
-  tc->COUNT16.INTENSET.reg = TC_INTENSET_OVF;
+  tc->COUNT16.INTENSET.bit.OVF = 1; // Enable overflow interrupt
+  tc->COUNT16.INTENSET.bit.MC1 = 1; // Enable match compare interrupt
 
   NVIC_DisableIRQ(timer[timerNum].IRQn);
   NVIC_ClearPendingIRQ(timer[timerNum].IRQn);
@@ -410,11 +413,23 @@ void _PM_timerInit(void *tptr) {
 // above, but must be inactive before calling this.
 inline void _PM_timerStart(void *tptr, uint32_t period) {
   Tc *tc = (Tc *)tptr; // Cast peripheral address passed in
+  uint16_t cc1;
   tc->COUNT16.COUNT.reg = 0;
   while (tc->COUNT16.SYNCBUSY.bit.COUNT)
     ;
+
+  if (period < _PM_minMinPeriod) {
+    cc1 = period;              // Use match compare for early off
+    period = _PM_minMinPeriod; // And constrain period to allowed minimum
+  } else {
+    cc1 = 0xFFFF; // Set match compare to huge value that never triggers
+  }
+
   tc->COUNT16.CC[0].reg = period;
   while (tc->COUNT16.SYNCBUSY.bit.CC0)
+    ;
+  tc->COUNT16.CC[1].reg = cc1;
+  while (tc->COUNT16.SYNCBUSY.bit.CC1)
     ;
   tc->COUNT16.CTRLA.bit.ENABLE = 1;
   while (tc->COUNT16.SYNCBUSY.bit.STATUS)
@@ -456,9 +471,6 @@ uint32_t _PM_timerStop(void *tptr) {
 #define _PM_clockHoldHigh asm("nop; nop; nop");
 #define _PM_clockHoldLow asm("nop");
 #endif
-
-//#define _PM_minMinPeriod 160
-#define _PM_minMinPeriod 50
 
 #endif // end __SAMD51__
 
@@ -643,10 +655,13 @@ extern "C" {
 
 // Timer interrupt service routine
 void _PM_IRQ_HANDLER(void) {
-  if (_PM_TIMER_DEFAULT->EVENTS_COMPARE[0]) {
-    _PM_TIMER_DEFAULT->EVENTS_COMPARE[0] = 0;
+  if (_PM_TIMER_DEFAULT->EVENTS_COMPARE[0]) {        // Compare match 0?
+    _PM_TIMER_DEFAULT->EVENTS_COMPARE[0] = 0;        //   Clear flag
+    _PM_row_handler(_PM_protoPtr);                   //   In core.c
+  } else if (_PM_TIMER_DEFAULT->EVENTS_COMPARE[1]) { // Compare match 1?
+    _PM_TIMER_DEFAULT->EVENTS_COMPARE[0] = 1;        //   Clear flag
+    _PM_matrix_oe_off(_PM_protoPtr);                 //   Disable LED output
   }
-  _PM_row_handler(_PM_protoPtr); // In core.c
 }
 
 #ifdef __cplusplus
@@ -697,12 +712,17 @@ void *_PM_protoPtr = NULL;
 
 // Timer interrupt service routine
 void _PM_IRQ_HANDLER(void) {
-  NRF_TIMER_Type *timer = (((Protomatter_core *)_PM_protoPtr)->timer);
-  if (timer->EVENTS_COMPARE[0]) {
-    timer->EVENTS_COMPARE[0] = 0;
-  }
-
+  Protomatter_core *core = (Protomatter_core *)_PM_protoPtr;
+  NRF_TIMER_Type *timer = core->timer;
   _PM_row_handler(_PM_protoPtr); // In core.c
+
+  if (timer->EVENTS_COMPARE[0]) {        // Compare match 0?
+    timer->EVENTS_COMPARE[0] = 0;        //   Clear flag
+    _PM_row_handler(core);               //   Data-stuffer in core.c
+  } else if (timer->EVENTS_COMPARE[1]) { // Compare match 1?
+    timer->EVENTS_COMPARE[0] = 1;        //   Clear flag
+    _PM_matrix_oe_off(core);             //   Disable LED output
+  }
 }
 
 #else
