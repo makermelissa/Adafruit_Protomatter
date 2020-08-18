@@ -1379,7 +1379,7 @@ void _PM_convert_565_word(Protomatter_core *core, uint16_t *source,
   uint16_t clockMask = core->clockMask;
 #else
   // core->clockMask mask is 32-bit, shift down to 16-bit for this func.
-  uint16_6 clockMask = core->clockMask >> (core->portOffset * 16);
+  uint16_t clockMask = core->clockMask >> (core->portOffset * 16);
 #endif
 
   // Clear matrix buffer (because each chain's data is OR'd into place).
